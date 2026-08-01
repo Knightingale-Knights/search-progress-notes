@@ -1,0 +1,13 @@
+{
+  "name": "progress-notes-search",
+  "version": "1.0.0",
+  "description": "Chunked/embedded semantic search and Q&A over progress notes, scoped by per-user participant permissions.",
+  "scripts": {
+    "dev": "vercel dev"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.32.0",
+    "@supabase/supabase-js": "^2.45.0",
+    "openai": "^4.60.0"
+  }
+}
