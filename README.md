@@ -4,25 +4,31 @@ Chunked, embedded, semantically searchable progress notes — same pattern as Po
 
 ## How it works
 
-1. **Ingest** — whenever a progress note is created or edited in Bubble, call `/api/ingest-note`. It chunks the note (splitting on timestamp boundaries where present, ~900 chars per chunk with slight overlap), embeds each chunk with OpenAI, and stores them in Supabase.
-2. **Query** — a user asks a question via a Bubble chat UI. Bubble passes the question plus the list of participant IDs that user is allowed to see. The endpoint embeds the question, finds the most relevant chunks *only among those participants*, and asks Claude to answer using just those excerpts.
+1. **Ingest** — whenever a progress note is created in Bubble, call `/api/ingest-note`. It chunks the note (splitting on timestamp boundaries where present, ~900 chars per chunk with slight overlap), embeds each chunk with OpenAI, and stores them in Supabase.
+2. **Backfill** — a one-off local script pulls every existing note out of Bubble and ingests it, so historical notes are searchable too.
+3. **Daily sync** — a Vercel Cron job runs once a day and ingests any note created since the last run, so new notes stay searchable without manual intervention.
+4. **Query** — a user asks a question via a Bubble chat UI. Bubble passes the question plus the list of participant IDs that user is allowed to see. The endpoint embeds the question, finds the most relevant chunks *only among those participants*, and asks Claude to answer using just those excerpts.
 
 Permissions are enforced at the database query level (via `allowed_participant_ids` in the SQL function), not just filtered afterward — so a user can never see a chunk from a participant outside their allowed list, regardless of how the question is phrased.
+
+Progress notes can't be edited in Bubble once submitted, so ingestion is create-only — there's no edit-sync case to handle.
 
 ## Setup
 
 **1. Supabase** — run `sql/schema.sql` in the SQL editor of the same Supabase project used for Policy Ai / Klarra (it creates its own table, so no conflict).
 
-**2. Environment variables** (Vercel project settings):
+**2. Environment variables** (Vercel project settings, and a local `.env` file for the backfill script):
 
 ```
 SUPABASE_URL=...
 SUPABASE_SERVICE_ROLE_KEY=...
 OPENAI_API_KEY=...
 ANTHROPIC_API_KEY=...
+BUBBLE_BASE_URL=https://knightingale.com.au
+BUBBLE_API_TOKEN=...
 ```
 
-Use the **service role** key (not the anon key) since this runs server-side and needs to bypass row-level security — Supabase RLS isn't used here; permission scoping happens via the `allowed_participant_ids` parameter instead.
+Use the **service role** Supabase key (not the anon key) since this runs server-side and needs to bypass row-level security — Supabase RLS isn't used here; permission scoping happens via the `allowed_participant_ids` parameter instead.
 
 **3. Deploy**:
 
@@ -31,21 +37,29 @@ npm install
 vercel deploy
 ```
 
+Vercel will pick up `vercel.json` automatically and schedule the daily cron.
+
 ## Endpoints
 
 ### `POST /api/ingest-note`
 
+Called by Bubble whenever a new progress note is created.
+
 ```json
 {
   "noteId": "<bubble progress note unique id>",
-  "participantId": "<bubble participant unique id>",
+  "participantId": "<bubble user unique id — the participant field is a User>",
   "participantName": "David",
   "shiftDate": "2026-07-30",
   "noteText": "0900: Arrived..."
 }
 ```
 
-Deletes any existing chunks for that `noteId` first, so calling this again on an edited note replaces rather than duplicates. Returns `{ success: true, chunksCreated: N }`.
+Deletes any existing chunks for that `noteId` first, so it's safe to call more than once on the same note. Returns `{ success: true, chunksCreated: N }`.
+
+### `GET|POST /api/sync-daily`
+
+Triggered automatically by Vercel Cron once a day (see `vercel.json` — currently `0 16 * * *` UTC, i.e. ~2-3am Melbourne time depending on daylight saving). Pulls notes with `Created Date` in the last 26 hours (a 2-hour overlap beyond the 24-hour cadence as a safety margin — harmless since re-ingesting an already-ingested note just replaces its chunks) and ingests any it finds. Can also be triggered manually by visiting the URL or calling it, for testing.
 
 ### `POST /api/query-notes`
 
@@ -69,10 +83,10 @@ Returns:
 
 ## Wiring into Bubble
 
-**Ingest (backend workflow, runs on note create AND edit):**
+**Ingest (backend workflow, runs on note create):**
 
-1. Trigger: "Progress Note is created" (New) and "Progress Note is modified" (Changes) — or a single backend workflow both call, scheduled/triggered as your existing note-save flow does.
-2. API Connector call to `/api/ingest-note` with `noteText` = the note's field, `participantId`/`participantName`/`shiftDate` from the related Participant and Shift.
+1. Trigger: "Progress Note is created" (New).
+2. API Connector call to `/api/ingest-note` with `noteText` = the note's `summary` field, `participantId` = the note's `participant` field's unique id, `shiftDate` = the note's `date` field, `noteId` = the note's unique id.
 
 **Query (chat UI, same pattern as Policy Ai popup):**
 
@@ -82,4 +96,13 @@ Returns:
 
 ## Backfilling existing notes
 
-For notes that already exist in Bubble before this goes live, you'll want a one-off backfill: loop through existing Progress Notes (e.g. via a Bubble "Schedule API workflow on a list") and call `/api/ingest-note` for each. Worth rate-limiting this (e.g. one every second or two) to stay under OpenAI/Supabase rate limits on a large backfill.
+Run once, locally, after setup:
+
+```bash
+npm install
+npm run backfill
+```
+
+This pulls every existing Progress Note from Bubble (paginated automatically) and ingests each one, with a small delay between notes to stay under OpenAI/Supabase rate limits. It logs progress as it goes and prints a summary of any failures at the end — safe to re-run if it fails partway through, since re-ingesting a note just replaces its chunks rather than duplicating them.
+
+For a very large note history, expect roughly 1 note every ~1-2 seconds once embedding time is factored in — budget accordingly (e.g. a few thousand notes could take an hour or more).
