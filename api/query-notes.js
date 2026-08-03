@@ -21,14 +21,29 @@ module.exports = async function handler(req, res) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  const { question, allowedParticipantIds } = req.body || {};
+  const { question, allowedParticipantIds: rawAllowedIds } = req.body || {};
 
   if (!question || typeof question !== 'string' || !question.trim()) {
     return res.status(400).json({ error: 'question (string) is required' });
   }
 
-  if (!Array.isArray(allowedParticipantIds) || allowedParticipantIds.length === 0) {
-    return res.status(400).json({ error: 'allowedParticipantIds (non-empty array) is required' });
+  // Bubble's API Connector doesn't reliably serialize a dynamic list into a hand-written
+  // JSON array in the body template, so accept either a real array or a comma-separated
+  // string (Bubble handles the latter natively) and normalize here.
+  let allowedParticipantIds;
+  if (Array.isArray(rawAllowedIds)) {
+    allowedParticipantIds = rawAllowedIds;
+  } else if (typeof rawAllowedIds === 'string') {
+    allowedParticipantIds = rawAllowedIds
+      .split(',')
+      .map((id) => id.trim())
+      .filter(Boolean);
+  } else {
+    allowedParticipantIds = [];
+  }
+
+  if (allowedParticipantIds.length === 0) {
+    return res.status(400).json({ error: 'allowedParticipantIds (non-empty array or comma-separated string) is required' });
   }
 
   try {
