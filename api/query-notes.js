@@ -13,7 +13,12 @@ Rules:
 - Always mention which participant(s) and roughly when (date) your answer is drawn from.
 - If excerpts from multiple participants are relevant, address each separately and clearly.
 - Keep the answer concise and direct — a support coordinator scanning quickly should get the point immediately.
-- Do not fabricate details not present in the excerpts.`;
+- Do not fabricate details not present in the excerpts.
+
+Formatting:
+- Plain text only — never use markdown bold (**), italics, or headers.
+- Write every date as "Ddd D Mon YYYY", e.g. Wed 26 Nov 2025.
+- If the answer has more than one point (a list, or multiple separate observations), put a blank line between each one, not just a line break.`;
 
 module.exports = async function handler(req, res) {
   if (req.method !== 'POST') {
